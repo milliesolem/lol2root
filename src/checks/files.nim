@@ -6,13 +6,16 @@ import ../core
 import std/[os, strutils, re]
 
 const
+  # Binaries that are dangerous when SUID/SGID. Deliberately excludes the
+  # normally-setuid tools (su, sudo, passwd, mount, umount, ping, pkexec) whose
+  # setuid bit is their standard state, not an escalation finding.
   escNames = [
     "sh", "bash", "dash", "zsh", "ksh", "python", "python2", "python3",
     "perl", "ruby", "php", "node", "find", "vim", "nvim", "nano", "less",
-    "more", "awk", "gawk", "cp", "mv", "tar", "systemctl", "pkexec",
-    "passwd", "chmod", "chown", "su", "sudo", "mount", "umount", "gdb",
-    "strace", "socat", "tmux", "screen", "env", "mail", "man", "nice",
-    "ping", "arp", "docker", "lxc", "ionice", "taskset", "custom"
+    "more", "awk", "gawk", "cp", "mv", "tar", "systemctl",
+    "chmod", "chown", "gdb", "strace", "socat", "tmux", "screen", "env",
+    "mail", "man", "nice", "arp", "docker", "lxc", "ionice", "taskset",
+    "custom"
   ]
 
   criticalFiles = [
@@ -62,46 +65,78 @@ proc detailWithOwner(path: string): string =
   let o = statOwner(path)
   if o.len > 0: path & " (" & o & ")" else: path
 
+const
+  suidStdDirs = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32", "/opt", "/usr/local"]
+  suidUnusualDirs = ["/tmp", "/var/tmp", "/dev/shm", "/run", "/root", "/home", "/var/www", "/srv"]
+
+proc findSetidFiles(permMask: string, maxUnusualDepth: int): seq[string] =
+  ## Collect setuid/setgid files without a slow whole-tree `find /` walk: scan
+  ## standard binary directories fully and scan writable/unusual locations at a
+  ## shallow depth (where planted setuid binaries actually live).
+  result = @[]
+  let stdCmd = "find " & suidStdDirs.join(" ") & " -xdev -perm -" & permMask &
+               " -type f 2>/dev/null"
+  for line in run(stdCmd, 15).output.splitLines():
+    let p = line.strip()
+    if p.len > 0: result.add p
+  let unCmd = "find " & suidUnusualDirs.join(" ") & " -xdev -maxdepth " &
+              $maxUnusualDepth & " -perm -" & permMask & " -type f 2>/dev/null"
+  for line in run(unCmd, 15).output.splitLines():
+    let p = line.strip()
+    if p.len > 0 and p notin result: result.add p
+
 # ---------------------------------------------------------------------------
 # 1. SUID binaries
 # ---------------------------------------------------------------------------
 
 proc checkSuid(opts: Options, rep: Reporter) =
-  let cmd = "find / -xdev -perm -4000 -type f " &
-    "! -path '/proc/*' ! -path '/sys/*' ! -path '/dev/*' ! -path '/snap/*' 2>/dev/null"
-  let r = run(cmd, 20)
-  var count = 0
-  for raw in r.output.splitLines():
-    if count >= 60: break
-    let path = raw.strip()
-    if path.len == 0: continue
+  let files = findSetidFiles("4000", 4)
+  var high = 0
+  for path in files:
     let base = path.extractFilename()
-    var sev = sevLow
+    var dangerous = false
+    var detail = detailWithOwner(path)
     if isEsc(base) or isEsc(path):
-      sev = sevHigh
+      dangerous = true
     elif writableByMe(path):
-      sev = sevHigh
+      dangerous = true
+      detail = detailWithOwner(path) & " - writable by current user"
     elif unusualSuidPath(path):
-      sev = sevHigh
-    rep.addFinding("files.suid", "files", "SUID binary", detailWithOwner(path), sev)
-    inc count
+      dangerous = true
+    if writableByMe(path.parentDir()):
+      dangerous = true
+      detail = detailWithOwner(path) & " - parent directory " & path.parentDir() &
+               " is writable - replace the binary"
+    if dangerous:
+      rep.addFinding("files.suid", "files", "SUID binary", detail, sevHigh)
+      inc high
+
+  if files.len > 0:
+    rep.addFinding("files.suid", "files", "SUID binaries (" & $files.len & ")",
+                   files.join("\n"), sevInfo)
 
 # ---------------------------------------------------------------------------
 # 2. SGID binaries
 # ---------------------------------------------------------------------------
 
 proc checkSgid(opts: Options, rep: Reporter) =
-  let r = run("find / -xdev -perm -2000 -type f 2>/dev/null", 20)
+  let files = findSetidFiles("2000", 4)
   var count = 0
-  for raw in r.output.splitLines():
+  for path in files:
     if count >= 30: break
-    let path = raw.strip()
-    if path.len == 0: continue
     let base = path.extractFilename()
     let writable = writableByMe(path)
-    if not (writable or isEsc(base) or isEsc(path)): continue
-    let sev = if writable: sevMed else: sevLow
-    rep.addFinding("files.sgid", "files", "SGID binary", detailWithOwner(path), sev)
+    let parentWritable = writableByMe(path.parentDir())
+    if not (writable or isEsc(base) or isEsc(path) or parentWritable): continue
+    var sev = sevLow
+    var detail = detailWithOwner(path)
+    if parentWritable:
+      sev = sevHigh
+      detail = detailWithOwner(path) & " - parent directory " & path.parentDir() &
+               " is writable - replace the binary"
+    elif writable:
+      sev = sevMed
+    rep.addFinding("files.sgid", "files", "SGID binary", detail, sev)
     inc count
 
 # ---------------------------------------------------------------------------
@@ -223,6 +258,26 @@ proc checkCredentials(opts: Options, rep: Reporter) =
       inc count
 
 # ---------------------------------------------------------------------------
+# 5. SSH authorized_keys
+# ---------------------------------------------------------------------------
+
+proc checkSshKeys(opts: Options, rep: Reporter) =
+  for f in [getHomeDir() / ".ssh" / "authorized_keys", "/root/.ssh/authorized_keys"]:
+    if existsP(f) and writableByMe(f):
+      rep.addFinding("files.ssh_keys", "files", "Writable authorized_keys: " & f,
+                     f & " is writable - append your own public key for passwordless login.",
+                     sevHigh)
+
+# ---------------------------------------------------------------------------
+# 6. Readable /root
+# ---------------------------------------------------------------------------
+
+proc checkRootDir(opts: Options, rep: Reporter) =
+  if readableByMe("/root"):
+    rep.addFinding("files.root_dir", "files", "Readable /root directory",
+                   "/root is readable by the current user.", sevMed)
+
+# ---------------------------------------------------------------------------
 
 proc register*(reg: Registry) =
   reg.add("files.suid", "files", "SUID binaries",
@@ -233,3 +288,7 @@ proc register*(reg: Registry) =
     proc(opts: Options, rep: Reporter) = checkWritable(opts, rep))
   reg.add("files.credentials", "files", "Credentials & secrets",
     proc(opts: Options, rep: Reporter) = checkCredentials(opts, rep))
+  reg.add("files.ssh_keys", "files", "Writable SSH authorized_keys",
+    proc(opts: Options, rep: Reporter) = checkSshKeys(opts, rep))
+  reg.add("files.root_dir", "files", "Readable /root",
+    proc(opts: Options, rep: Reporter) = checkRootDir(opts, rep))

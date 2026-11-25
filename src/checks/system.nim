@@ -359,6 +359,92 @@ proc checkCaps(opts: Options, rep: Reporter) =
       rep.addFinding("system.caps", "system", path, caps, sev)
 
 # ---------------------------------------------------------------------------
+# 8. system.mounts - writable mount hardening and notable mount types
+# ---------------------------------------------------------------------------
+
+proc checkMounts(opts: Options, rep: Reporter) =
+  var mounts = readText("/proc/mounts")
+  if mounts.len == 0:
+    mounts = run("mount 2>/dev/null").output
+
+  if mounts.len == 0:
+    return
+
+  const writableLocations = ["/tmp", "/dev/shm", "/var/tmp", "/run", "/run/shm"]
+  const notableFsTypes = ["nfs", "nfs4", "nfsd", "cifs", "smb3",
+                          "overlay", "overlayfs"]
+
+  var count = 0
+  for rawLine in mounts.splitLines():
+    if count >= 30:
+      break
+    let line = rawLine.strip()
+    if line.len == 0:
+      continue
+    let fields = line.splitWhitespace()
+    if fields.len < 4:
+      continue
+    let device = fields[0]
+    let mountpoint = fields[1]
+    let fstype = fields[2]
+    let options = fields[3]
+
+    let optList = options.split(',')
+
+    # User-writable locations mounted without the usual hardening flags.
+    if mountpoint in writableLocations:
+      var missing: seq[string] = @[]
+      for flag in ["nosuid", "noexec", "nodev"]:
+        if flag notin optList:
+          missing.add flag
+      if missing.len > 0:
+        rep.addFinding("system.mounts", "system",
+                       "Mount " & mountpoint & " missing hardening flags",
+                       "missing: " & missing.join(",") & " (options: " & options & ")",
+                       sevMed)
+        inc count
+
+    # Notable mount types / user-mounted filesystems.
+    if count < 30:
+      let notableFs = fstype in notableFsTypes or fstype.startsWith("fuse")
+      let userMount = "user" in optList
+      if notableFs or userMount:
+        rep.addFinding("system.mounts", "system",
+                       "Notable mount: " & mountpoint,
+                       "device=" & device & " fstype=" & fstype & " options=" & options,
+                       sevLow)
+        inc count
+
+# ---------------------------------------------------------------------------
+# 9. system.lastlogins - recent logins (slow/verbose, gated on opts.all)
+# ---------------------------------------------------------------------------
+
+proc checkLastLogins(opts: Options, rep: Reporter) =
+  if not opts.all:
+    return
+  if not which("last"):
+    return
+
+  let res = run("last -a 2>/dev/null", 4)
+  if res.output.len == 0:
+    return
+
+  var kept: seq[string] = @[]
+  for rawLine in res.output.splitLines():
+    let line = rawLine.strip()
+    if line.len == 0:
+      continue
+    if line.startsWith("wtmp begins"):
+      continue
+    if kept.len >= 15:
+      break
+    kept.add line
+
+  if kept.len > 0:
+    rep.addFinding("system.lastlogins", "system", "Recent logins",
+                   kept.join("\n"), sevInfo)
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -370,3 +456,5 @@ proc register*(reg: Registry) =
   reg.add("system.path", "system", "PATH", checkPath)
   reg.add("system.sudo", "system", "Sudo", checkSudo)
   reg.add("system.caps", "system", "File capabilities", checkCaps)
+  reg.add("system.mounts", "system", "Mount points", checkMounts)
+  reg.add("system.lastlogins", "system", "Recent logins", checkLastLogins)

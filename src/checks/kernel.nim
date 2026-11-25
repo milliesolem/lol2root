@@ -394,37 +394,120 @@ proc checkCopyFail(opts: Options, rep: Reporter) =
                    reason, sevHigh,
                    @["https://nvd.nist.gov/vuln/detail/CVE-2026-31431"])
 
+type
+  CveRange = tuple[minK, maxK: KVer]
+  CveEntry = object
+    cve: string
+    name: string
+    ranges: seq[CveRange]
+
+const cveTable = [
+  CveEntry(cve: "CVE-2016-5195", name: "Dirty COW",
+    ranges: @[(minK: (2, 6, 22), maxK: (4, 8, 3))]),
+  CveEntry(cve: "CVE-2017-1000112", name: "udp frag offload (UFO)",
+    ranges: @[(minK: (4, 4, 0), maxK: (4, 13, 0))]),
+  CveEntry(cve: "CVE-2017-7308", name: "AF_PACKET packet_set_ring",
+    ranges: @[(minK: (3, 2, 0), maxK: (4, 10, 7))]),
+  CveEntry(cve: "CVE-2019-13272", name: "PTRACE_TRACEME",
+    ranges: @[(minK: (4, 0, 0), maxK: (5, 1, 17))]),
+  CveEntry(cve: "CVE-2021-22555", name: "Netfilter x_tables OOB write",
+    ranges: @[
+      (minK: (2, 6, 19), maxK: (4, 4, 267)),
+      (minK: (4, 5, 0), maxK: (4, 9, 267)),
+      (minK: (4, 10, 0), maxK: (4, 14, 231)),
+      (minK: (4, 15, 0), maxK: (4, 19, 188)),
+      (minK: (4, 20, 0), maxK: (5, 4, 113)),
+      (minK: (5, 5, 0), maxK: (5, 10, 31)),
+      (minK: (5, 11, 0), maxK: (5, 12, 0)),
+    ]),
+  CveEntry(cve: "CVE-2022-0847", name: "Dirty Pipe",
+    ranges: @[
+      (minK: (5, 8, 0), maxK: (5, 10, 102)),
+      (minK: (5, 11, 0), maxK: (5, 15, 25)),
+      (minK: (5, 16, 0), maxK: (5, 16, 11)),
+    ]),
+  CveEntry(cve: "CVE-2022-25636", name: "nf_dup_netdev OOB write",
+    ranges: @[
+      (minK: (5, 4, 0), maxK: (5, 4, 182)),
+      (minK: (5, 5, 0), maxK: (5, 10, 103)),
+      (minK: (5, 11, 0), maxK: (5, 15, 26)),
+      (minK: (5, 16, 0), maxK: (5, 16, 12)),
+    ]),
+  CveEntry(cve: "CVE-2022-2588", name: "cls_route use-after-free",
+    ranges: @[
+      (minK: (2, 6, 0), maxK: (4, 9, 326)),
+      (minK: (4, 10, 0), maxK: (4, 14, 291)),
+      (minK: (4, 15, 0), maxK: (4, 19, 256)),
+      (minK: (4, 20, 0), maxK: (5, 4, 211)),
+      (minK: (5, 5, 0), maxK: (5, 10, 137)),
+      (minK: (5, 11, 0), maxK: (5, 15, 61)),
+      (minK: (5, 16, 0), maxK: (5, 18, 18)),
+      (minK: (5, 19, 0), maxK: (5, 19, 2)),
+    ]),
+  CveEntry(cve: "CVE-2023-0386", name: "overlayfs setuid",
+    ranges: @[(minK: (5, 11, 0), maxK: (6, 2, 0))]),
+  CveEntry(cve: "CVE-2023-32233", name: "nf_tables use-after-free",
+    ranges: @[
+      (minK: (3, 13, 0), maxK: (4, 14, 315)),
+      (minK: (4, 15, 0), maxK: (4, 19, 283)),
+      (minK: (4, 20, 0), maxK: (5, 4, 243)),
+      (minK: (5, 5, 0), maxK: (5, 10, 180)),
+      (minK: (5, 11, 0), maxK: (5, 15, 111)),
+      (minK: (5, 16, 0), maxK: (6, 1, 28)),
+      (minK: (6, 2, 0), maxK: (6, 2, 15)),
+      (minK: (6, 3, 0), maxK: (6, 3, 2)),
+    ]),
+  CveEntry(cve: "CVE-2024-1086", name: "nf_tables double-free",
+    ranges: @[
+      (minK: (3, 15, 0), maxK: (5, 15, 149)),
+      (minK: (6, 1, 0), maxK: (6, 1, 76)),
+      (minK: (6, 2, 0), maxK: (6, 6, 15)),
+      (minK: (6, 7, 0), maxK: (6, 7, 3)),
+    ]),
+  CveEntry(cve: "CVE-2014-0196", name: "rawmodePTY",
+    ranges: @[(minK: (2, 6, 31), maxK: (3, 14, 4))]),
+  CveEntry(cve: "CVE-2010-3904", name: "rds",
+    ranges: @[(minK: (2, 6, 30), maxK: (2, 6, 37))]),
+]
+
+proc inCveRange(v: KVer, e: CveEntry): bool =
+  for r in e.ranges:
+    if versionGe(v, r.minK) and versionLt(v, r.maxK):
+      return true
+  false
+
+proc verStr(k: KVer): string = $k.maj & "." & $k.min & "." & $k.pat
+
+proc rangeText(e: CveEntry): string =
+  result = ""
+  for r in e.ranges:
+    if result.len > 0: result.add ", "
+    result.add "[" & verStr(r.minK) & ", " & verStr(r.maxK) & ")"
+
 proc checkCves(opts: Options, rep: Reporter) =
   let release = run("uname -r", 2).output.strip()
   if release.len == 0: return
   let v = parseKernelVersion(release)
   if v.maj == 0: return
 
-  proc addCve(id, title, cve: string) =
-    rep.addFinding(id, "kernel", title,
-                   "kernel " & release & " is in affected range", sevHigh,
-                   @["https://nvd.nist.gov/vuln/detail/" & cve])
-
-  # Dirty COW: fixed in 4.8.3; conservatively flag < 4.8.3 plus all 4.8.x.
-  if versionLt(v, (maj: 4, min: 8, pat: 3)) or (v.maj == 4 and v.min == 8):
-    addCve("kernel.cve.2016-5195", "Dirty COW CVE-2016-5195", "CVE-2016-5195")
-
-  if versionLt(v, (maj: 4, min: 13, pat: 0)):
-    addCve("kernel.cve.2017-1000112", "udp frag offload CVE-2017-1000112", "CVE-2017-1000112")
-
-  if versionGe(v, (maj: 5, min: 8, pat: 0)) and versionLt(v, (maj: 5, min: 16, pat: 11)):
-    addCve("kernel.cve.2022-0847", "Dirty Pipe CVE-2022-0847", "CVE-2022-0847")
-
-  if versionGe(v, (maj: 5, min: 12, pat: 0)) and versionLt(v, (maj: 5, min: 19, pat: 0)):
-    addCve("kernel.cve.2022-2588", "cls_route use-after-free CVE-2022-2588", "CVE-2022-2588")
-
-  if versionGe(v, (maj: 5, min: 11, pat: 0)) and versionLt(v, (maj: 6, min: 2, pat: 0)):
-    addCve("kernel.cve.2023-0386", "overlayfs setuid CVE-2023-0386", "CVE-2023-0386")
+  for e in cveTable:
+    if inCveRange(v, e):
+      rep.addFinding(
+        "kernel.cve." & e.cve[4..^1],
+        "kernel",
+        e.cve & " " & e.name,
+        "kernel " & release & " is in affected range " & rangeText(e),
+        sevHigh,
+        @["https://nvd.nist.gov/vuln/detail/" & e.cve])
 
   # Looney Tunables is a glibc bug, so gate on the detected glibc version.
   let (gmaj, gmin) = parseGlibcVersion(run("ldd --version 2>/dev/null", 2).output)
   if gmaj == 2 and gmin >= 34 and gmin <= 37:
-    addCve("kernel.cve.2023-4911", "Looney Tunables CVE-2023-4911 (glibc)", "CVE-2023-4911")
+    rep.addFinding("kernel.cve.2023-4911", "kernel",
+                   "Looney Tunables CVE-2023-4911 (glibc)",
+                   "glibc " & $gmaj & "." & $gmin & " is in affected range",
+                   sevHigh,
+                   @["https://nvd.nist.gov/vuln/detail/CVE-2023-4911"])
 
 proc checkUserns(opts: Options, rep: Reporter) =
   var enabled = false
@@ -444,7 +527,24 @@ proc checkUserns(opts: Options, rep: Reporter) =
                    "user namespaces are available to unprivileged processes (a common exploit prerequisite)",
                    sevLow)
 
+proc checkModules(opts: Options, rep: Reporter) =
+  ## Emit one informational finding summarizing the loaded kernel modules.
+  let text = readText("/proc/modules")
+  if text.len == 0: return
+  var names: seq[string] = @[]
+  for line in text.splitLines():
+    let name = line.splitWhitespace()
+    if name.len > 0 and name[0].len > 0:
+      names.add name[0]
+    if names.len >= 20:
+      break
+  if names.len == 0: return
+  rep.addFinding("kernel.modules", "kernel", "Loaded kernel modules",
+                 $names.len & " loaded kernel modules (first " & $names.len & "): " & names.join(", "),
+                 sevInfo)
+
 proc register*(reg: Registry) =
   reg.add("kernel.copyfail", "kernel", "CopyFail CVE-2026-31431", checkCopyFail)
   reg.add("kernel.cve", "kernel", "Kernel CVE check", checkCves)
   reg.add("kernel.userns", "kernel", "User namespaces", checkUserns)
+  reg.add("kernel.modules", "kernel", "Kernel modules", checkModules)

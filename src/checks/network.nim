@@ -2,7 +2,7 @@
 ##
 ## Contract: see checks/system.nim for the module conventions.
 
-import std/strutils
+import std/[os, strutils]
 import ../core
 
 const cat = "network"
@@ -209,6 +209,114 @@ proc checkCloud(opts: Options, rep: Reporter) =
       found.join("\n"),
       sevLow)
 
+proc checkInterfaces(opts: Options, rep: Reporter) =
+  if not which("ip"):
+    return
+  let txt = run("ip addr 2>/dev/null", opts.timeoutSec).output
+  if txt.strip().len == 0:
+    return
+
+  var ifname = ""
+  var entries: seq[string] = @[]
+  for raw in txt.splitLines():
+    if raw.len == 0:
+      continue
+    if raw[0] in {' ', '\t'}:
+      let l = raw.strip()
+      if not (l.startsWith("inet ") or l.startsWith("inet6 ")):
+        continue
+      let parts = l.splitWhitespace()
+      if parts.len < 2:
+        continue
+      let ipaddr = parts[1]
+      if ipaddr.startsWith("127.") or ipaddr.startsWith("::1"):
+        continue
+      if ifname.len == 0:
+        entries.add ipaddr
+      else:
+        entries.add ifname & ": " & ipaddr
+    else:
+      let parts = raw.splitWhitespace()
+      if parts.len >= 2:
+        var name = parts[1]
+        if name.len > 0 and name[^1] == ':':
+          name = name[0 ..< ^1]
+        ifname = name
+
+  if entries.len == 0:
+    return
+
+  let total = entries.len
+  if entries.len > 15:
+    entries = entries[0 ..< 15]
+    entries.add "… (" & $total & " addresses, truncated)"
+
+  rep.addFinding("network.interfaces", cat, "Network interfaces",
+    entries.join("\n"), sevInfo)
+
+proc checkNeighbors(opts: Options, rep: Reporter) =
+  if not opts.all:
+    return
+  var txt = ""
+  if which("ip"):
+    txt = run("ip neigh 2>/dev/null", opts.timeoutSec).output
+  elif which("arp"):
+    txt = run("arp -a 2>/dev/null", opts.timeoutSec).output
+  else:
+    return
+  if txt.strip().len == 0:
+    return
+
+  var lines: seq[string] = @[]
+  for raw in txt.splitLines():
+    let l = raw.strip()
+    if l.len > 0:
+      lines.add l
+
+  if lines.len == 0:
+    return
+  let total = lines.len
+  if lines.len > 15:
+    lines = lines[0 ..< 15]
+    lines.add "… (" & $total & " neighbours, truncated)"
+
+  rep.addFinding("network.neighbors", cat, "ARP neighbours",
+    lines.join("\n"), sevInfo)
+
+proc checkInternet(opts: Options, rep: Reporter) =
+  if not opts.all:
+    return
+  var res: tuple[output: string, exitCode: int]
+  if which("curl"):
+    res = run("curl -s --max-time 4 https://api.ipify.org 2>/dev/null", opts.timeoutSec)
+  elif which("wget"):
+    res = run("wget -qO- --timeout=4 https://api.ipify.org 2>/dev/null", opts.timeoutSec)
+  else:
+    return
+  let ip = res.output.strip()
+  if res.exitCode == 0 and ip.len > 0:
+    rep.addFinding("network.internet", cat, "Outbound internet access",
+      "Public IP: " & ip, sevInfo)
+
+proc checkTcpWrappers(opts: Options, rep: Reporter) =
+  for (path, id, title) in [
+      ("/etc/hosts.allow", "network.tcpwrappers.allow", "Writable /etc/hosts.allow"),
+      ("/etc/hosts.deny", "network.tcpwrappers.deny", "Writable /etc/hosts.deny")]:
+    if writableByMe(path):
+      rep.addFinding(id, cat, title,
+        path & " is writable by the current user; it controls TCP wrapper host access.",
+        sevMed)
+
+proc checkProxy(opts: Options, rep: Reporter) =
+  var lines: seq[string] = @[]
+  for name in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"]:
+    let value = getEnv(name)
+    if value.len > 0:
+      lines.add name & "=" & value
+  if lines.len > 0:
+    rep.addFinding("network.proxy", cat, "HTTP(S) proxy environment",
+      lines.join("\n"), sevInfo)
+
 # ---------------------------------------------------------------------------
 # registration
 # ---------------------------------------------------------------------------
@@ -218,3 +326,8 @@ proc register*(reg: Registry) =
   reg.add("network.ports", cat, "Listening ports", checkPorts)
   reg.add("network.hosts", cat, "Writable network config", checkHosts)
   reg.add("network.cloud", cat, "Cloud/virtual environment", checkCloud)
+  reg.add("network.interfaces", cat, "Network interfaces", checkInterfaces)
+  reg.add("network.neighbors", cat, "ARP neighbours", checkNeighbors)
+  reg.add("network.internet", cat, "Outbound internet access", checkInternet)
+  reg.add("network.tcpwrappers", cat, "TCP wrappers", checkTcpWrappers)
+  reg.add("network.proxy", cat, "HTTP(S) proxy environment", checkProxy)
