@@ -123,6 +123,18 @@ proc listDir*(p: string): seq[string] =
   except CatchableError:
     discard
 
+proc writableByMe*(p: string): bool =
+  ## True when `p` exists and the current user can write it (access(2) via
+  ## `test -w`). Also covers non-regular files such as sockets and dirs.
+  try: run("test -w " & quoteShell(p), 2).exitCode == 0
+  except CatchableError: false
+
+proc readableByMe*(p: string): bool =
+  ## True when `p` exists and the current user can read it (access(2) via
+  ## `test -r`).
+  try: run("test -r " & quoteShell(p), 2).exitCode == 0
+  except CatchableError: false
+
 proc getHostInfo*(): tuple[hostname, user, kernel: string] =
   result.hostname = run("hostname 2>/dev/null", 2).output.strip()
   if result.hostname.len == 0:
@@ -190,27 +202,25 @@ proc renderFinding*(f: Finding; opts: Options; color: bool): string =
     parts.add paint(indentBlock("ref: " & r, 7), ansiDim, color)
   result = parts.join("\n")
 
-proc render*(rep: Reporter; opts: Options): string =
-  ## Build the human-readable console report as a single string.
+proc renderHostLine*(opts: Options): string =
+  ## One dim "host / user / kernel" line, shown right under the banner.
+  let hi = getHostInfo()
+  paint("host: " & hi.hostname, ansiDim, opts.color) & "   " &
+  paint("user: " & hi.user, ansiDim, opts.color) & "   " &
+  paint("kernel: " & hi.kernel, ansiDim, opts.color)
+
+proc renderFindings*(rep: Reporter, opts: Options): string =
+  ## The findings sections and summary footer, without the banner or host line.
   rep.sortFindings()
   let color = opts.color
   var findings = rep.findings
   if opts.quiet:
     findings = findings.filterIt(it.severity in {sevCritical, sevHigh})
 
-  var lines: seq[string] = @[]
-  lines.add bannerText()
-  lines.add ""
-
-  let hi = getHostInfo()
-  lines.add paint("host: " & hi.hostname, ansiDim, color) & "   " &
-          paint("user: " & hi.user, ansiDim, color) & "   " &
-          paint("kernel: " & hi.kernel, ansiDim, color)
-  lines.add ""
-
   if findings.len == 0:
-    lines.add paint("No privileged findings.", ansiGreen, color)
-    return lines.join("\n")
+    return paint("No privileged findings.", ansiGreen, color)
+
+  var lines: seq[string] = @[]
 
   # Group by category preserving severity order within each group.
   var currentCat = ""
@@ -232,6 +242,11 @@ proc render*(rep: Reporter; opts: Options): string =
   lines.add paint("─".repeat(68), ansiDim, color)
   lines.add "  " & sumParts.join("  ·  ")
   result = lines.join("\n")
+
+proc render*(rep: Reporter; opts: Options): string =
+  ## Build the full human-readable report (banner + host line + findings).
+  result = bannerText() & "\n\n" & renderHostLine(opts) & "\n\n" &
+           renderFindings(rep, opts)
 
 # ---------------------------------------------------------------------------
 # JSON rendering

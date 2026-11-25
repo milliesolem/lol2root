@@ -8,16 +8,6 @@ import ../core
 const cat = "services"
 
 # ---------------------------------------------------------------------------
-# small helpers
-# ---------------------------------------------------------------------------
-
-proc writableByMe(p: string): bool =
-  ## True when `p` exists and the current user can write it (access(2) via
-  ## `test -w`). Also covers non-regular files such as sockets and dirs.
-  if p.len == 0: return false
-  run("test -w " & quoteShell(p), 4).exitCode == 0
-
-# ---------------------------------------------------------------------------
 # 1. cron jobs
 # ---------------------------------------------------------------------------
 

@@ -250,8 +250,7 @@ proc checkPath(opts: Options, rep: Reporter) =
       continue
 
     # A directory we can write to lets us shadow or inject executables.
-    let res = run("test -w " & quoteShell(e))
-    if res.exitCode == 0:
+    if writableByMe(e):
       var detail = "writable directory on PATH"
       if usrBinIdx >= 0 and i < usrBinIdx:
         detail &= "\nappears before /usr/bin"
@@ -270,11 +269,11 @@ proc checkSudo(opts: Options, rep: Reporter) =
   # Writable sudoers configuration is a privilege escalation on its own,
   # independent of whether `sudo -n -l` can list anything.
   if existsP("/etc/sudoers"):
-    if run("test -w /etc/sudoers").exitCode == 0:
+    if writableByMe("/etc/sudoers"):
       rep.addFinding("system.sudo", "system", "Writable /etc/sudoers",
                      "A writable sudoers file lets you add a NOPASSWD root rule.", sevCritical)
   for f in listDir("/etc/sudoers.d"):
-    if run("test -w " & quoteShell(f)).exitCode == 0:
+    if writableByMe(f):
       rep.addFinding("system.sudo", "system", "Writable sudoers file: " & f,
                      "A writable sudoers.d file lets you add a NOPASSWD root rule.", sevCritical)
 

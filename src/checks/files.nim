@@ -3,7 +3,7 @@
 ## Contract: see checks/system.nim for the module conventions.
 
 import ../core
-import std/[os, osproc, strutils, re]
+import std/[os, strutils, re]
 
 const
   escNames = [
@@ -42,12 +42,6 @@ proc statOwner(path: string): string =
   if r.exitCode == 0 and r.output.strip().len > 0:
     result = r.output.strip()
 
-proc isWritable(p: string): bool =
-  run("test -w " & quoteShell(p), 4).exitCode == 0
-
-proc isReadable(p: string): bool =
-  run("test -r " & quoteShell(p), 4).exitCode == 0
-
 proc isWorldReadable(p: string): bool =
   let r = run("stat -c '%a' " & quoteShell(p), 4)
   if r.exitCode != 0: return false
@@ -85,7 +79,7 @@ proc checkSuid(opts: Options, rep: Reporter) =
     var sev = sevLow
     if isEsc(base) or isEsc(path):
       sev = sevHigh
-    elif isWritable(path):
+    elif writableByMe(path):
       sev = sevHigh
     elif unusualSuidPath(path):
       sev = sevHigh
@@ -104,7 +98,7 @@ proc checkSgid(opts: Options, rep: Reporter) =
     let path = raw.strip()
     if path.len == 0: continue
     let base = path.extractFilename()
-    let writable = isWritable(path)
+    let writable = writableByMe(path)
     if not (writable or isEsc(base) or isEsc(path)): continue
     let sev = if writable: sevMed else: sevLow
     rep.addFinding("files.sgid", "files", "SGID binary", detailWithOwner(path), sev)
@@ -134,17 +128,17 @@ proc writableCriticalDetail(path: string): string =
 proc checkWritable(opts: Options, rep: Reporter) =
   # Critical system files writable by the current user.
   for f in criticalFiles:
-    if existsP(f) and isWritable(f):
+    if existsP(f) and writableByMe(f):
       rep.addFinding("files.writable", "files", "Writable critical file: " & f,
                      writableCriticalDetail(f), sevCritical)
 
   # Droppable sudoers and cron fragments.
   for f in listDir("/etc/sudoers.d"):
-    if isWritable(f):
+    if writableByMe(f):
       rep.addFinding("files.writable", "files", "Writable sudoers drop-in: " & f,
                      f & " is writable - drop a file granting NOPASSWD: ALL.", sevCritical)
   for f in listDir("/etc/cron.d"):
-    if isWritable(f):
+    if writableByMe(f):
       rep.addFinding("files.writable", "files", "Writable cron drop-in: " & f,
                      f & " is writable - plant a root cron job.", sevCritical)
 
@@ -166,7 +160,7 @@ proc checkWritable(opts: Options, rep: Reporter) =
   # Writable entries on PATH.
   for entry in getEnv("PATH").split(':'):
     if entry.len == 0: continue
-    if dirExists(entry) and isWritable(entry):
+    if dirExists(entry) and writableByMe(entry):
       rep.addFinding("files.writable", "files", "Writable PATH directory: " & entry,
                      entry & " is writable - plant a malicious binary ahead of a trusted one (PATH hijack).",
                      sevHigh)
@@ -177,7 +171,7 @@ proc checkWritable(opts: Options, rep: Reporter) =
 
 proc checkCredentials(opts: Options, rep: Reporter) =
   # Readable shadow file.
-  if existsP("/etc/shadow") and isReadable("/etc/shadow"):
+  if existsP("/etc/shadow") and readableByMe("/etc/shadow"):
     rep.addFinding("files.credentials", "files", "Readable /etc/shadow",
                    "/etc/shadow is readable by this user - crack root hashes offline.",
                    sevCritical)

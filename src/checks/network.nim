@@ -7,15 +7,6 @@ import ../core
 
 const cat = "network"
 
-# ---------------------------------------------------------------------------
-# small helpers
-# ---------------------------------------------------------------------------
-
-proc writable(p: string): bool =
-  ## True when `p` exists and the current user can write it. `test -w`
-  ## also covers non-regular files such as sockets.
-  run("test -w " & p & " 2>/dev/null").exitCode == 0
-
 proc inDockerGroup(): bool =
   for cmd in ["id -Gn 2>/dev/null", "groups 2>/dev/null"]:
     let r = run(cmd, 3)
@@ -81,7 +72,7 @@ proc netstatProc(parts: seq[string]): string =
 proc checkDocker(opts: Options, rep: Reporter) =
   var socketWritable = false
   for s in ["/var/run/docker.sock", "/run/docker.sock"]:
-    if writable(s):
+    if writableByMe(s):
       socketWritable = true
       break
 
@@ -181,7 +172,7 @@ proc checkHosts(opts: Options, rep: Reporter) =
     ("/etc/nsswitch.conf", "network.hosts.nsswitch", "Writable /etc/nsswitch.conf"),
   ]
   for (path, id, title) in targets:
-    if writable(path):
+    if writableByMe(path):
       rep.addFinding(id, cat, title,
         path & " is writable by the current user; it can be modified to spoof " &
         "hostnames or hijack name resolution.",

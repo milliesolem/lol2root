@@ -6,6 +6,9 @@ description   = "privilege escalation is a solved problem"
 license       = "GPL-3.0"
 srcDir        = "src"
 
+bin = @["main"]
+namedBin["main"] = "build/lol2root"
+
 # Dependencies
 
 # Runs on the Nim standard library only: no external packages required.
